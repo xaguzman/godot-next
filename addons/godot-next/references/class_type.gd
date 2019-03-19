@@ -78,8 +78,10 @@ enum Source {
 	NONE,
 	ENGINE,
 	SCRIPT,
-	ANONYMOUS
+    ANONYMOUS
 }
+
+const SELF_PATH := "res://addons/godot-next/references/class_type.gd"
 
 ##### PROPERTIES #####
 
@@ -99,34 +101,18 @@ var _is_filesystem_connected: bool = false
 
 ##### NOTIFICATIONS #####
 
-func _init(p_input = null, p_generate_deep_map: bool = true, p_duplicate_maps: bool = true) -> void:
-	if p_generate_deep_map:
-		_fetch_deep_type_map()
+func _init(p_input = null, p_generate_deep_map: bool = true) -> void:
 	match typeof(p_input):
 		TYPE_OBJECT:
 			if p_input is (get_script() as Script):
 				self.name = p_input.name
-				if p_duplicate_maps:
-					_script_map = p_input._script_map.duplicate()
-					_path_map = p_input._path_map.duplicate()
-					_deep_type_map = p_input._deep_type_map.duplicate()
-					_deep_path_map = p_input._deep_path_map.duplicate()
-				else:
-					_script_map = p_input._script_map
-					_path_map = p_input._path_map
-					_deep_type_map = p_input._deep_type_map
-					_deep_path_map = p_input._deep_path_map
 				return
 			_init_from_object(p_input)
-			_connect_script_updates()
 		TYPE_STRING:
 			if ResourceLoader.exists(p_input):
 				_init_from_path(p_input)
-				_connect_script_updates()
 			else:
 				_init_from_name(p_input)
-				_connect_script_updates()
-	return
 
 ##### OVERRIDES #####
 
@@ -141,66 +127,11 @@ func to_string():
 	if name:
 		return name
 	if res:
-		var named_path = namify_path(res.resource_path)
+		var named_path = TypeDB.namify_path(res.resource_path)
 		if res is PackedScene:
 			named_path += "Scn"
 		return named_path
 	return ""
-
-# Get Dictionary<name, data> map for script classes
-# 'data' is a Dictionary with the following format:
-"""
-{
-	'base': <engine class name>
-	'name': <name given to script>
-	'language': <scripting language>
-	'path': <path to script>
-}
-"""
-# Caches script maps for faster access.
-# Does not cache in the editor context.
-func get_script_classes() -> Dictionary:
-	_fetch_script_map()
-	return _script_map
-
-# Get Dictionary<path, name> map for script classes
-# Caches script maps for faster access.
-# Does not cache in the editor context.
-func get_path_map() -> Dictionary:
-	_fetch_script_map()
-	return _path_map
-
-# Same as get_script_map, but it includes all resources
-func get_deep_type_map() -> Dictionary:
-	_fetch_deep_type_map()
-	return _deep_type_map
-
-# Same as get_path_map, but it includes all resources
-func get_deep_path_map() -> Dictionary:
-	_fetch_deep_type_map()
-	return _deep_path_map
-
-# Forces a refresh of the script maps
-func refresh_script_classes() -> void:
-	_script_map = _get_script_map()
-	_build_path_map()
-
-# Same as refresh_script_map, but it includes all resources
-func refresh_deep_type_map() -> void:
-	_deep_type_map = _get_deep_type_map()
-	_build_deep_path_map()
-
-# Get a type map. Minimum: _script_map. Maximum: _deep_type_map.
-func _get_map() -> Dictionary:
-	var map := {}
-	# don't initialize unless player has already done so
-	if not _deep_type_map.empty():
-		map = _deep_type_map
-	# if we aren't using the deep map, then get the standard one
-	if map.empty():
-		_fetch_script_map()
-		map = _script_map
-	return map
 
 # Is this ClassType the same as or does it inherit another class name/resource?
 func is_type(p_other) -> bool:
@@ -209,8 +140,8 @@ func is_type(p_other) -> bool:
 			return false
 		Source.ENGINE:
 			if typeof(p_other) == TYPE_OBJECT and p_other.get_script() == get_script():
-				return static_is_type(name, p_other.name, _get_map())
-			return static_is_type(name, p_other, _get_map())
+				return TypeDB.is_type(name, p_other.name)
+			return TypeDB.is_type(name, p_other)
 	if typeof(p_other) == TYPE_OBJECT:
 		match p_other.get_class():
 			"Script", "PackedScene":
@@ -218,13 +149,13 @@ func is_type(p_other) -> bool:
 			_:
 				if p_other.get_script() == get_script():
 					if res:
-						return static_is_type(res, p_other.res, _get_map())
-					return static_is_type(name, p_other.name, _get_map())
+						return TypeDB.is_type(res, p_other.res)
+					return TypeDB.is_type(name, p_other.name)
 
 				var other = from_object(p_other)
 				if other.res:
-					return static_is_type(res, other.res, _get_map())
-	return static_is_type(res, p_other, _get_map())
+					return TypeDB.is_type(res, other.res)
+	return TypeDB.is_type(res, p_other)
 
 # Instantiate whatever type the ClassType refers to
 func instance() -> Object:
@@ -237,7 +168,7 @@ func instance() -> Object:
 			return res.instance()
 	return null
 
-# Get the name of the next inherited engine class
+# Get the engine class name
 func get_engine_class() -> String:
 	if Source.ENGINE == _source:
 		return name
@@ -249,7 +180,7 @@ func get_engine_class() -> String:
 			return state.get_node_type(0)
 	return ""
 
-# Get the name of the next inherited script
+# Get the script class name
 func get_script_class() -> String:
 	match _source:
 		Source.ENGINE:
@@ -258,17 +189,12 @@ func get_script_class() -> String:
 	if res:
 		var scene := res as PackedScene
 		if scene:
-			script = _scene_get_root_script(scene)
+			script = TypeDB._scene_get_root_script(scene)
 		elif res is Script:
 			script = res as Script
-	_fetch_script_map()
-	while script:
-		if _path_map.has(script.resource_path):
-			return _path_map[script.resource_path]
-		script = script.get_base_script()
-	return ""
+	return TypeDB.get_script_name(script)
 
-# Get the name of the next inherited type
+# Get the name of the type
 func get_type_class() -> String:
 	var ret := get_script_class()
 	if not ret:
@@ -277,7 +203,7 @@ func get_type_class() -> String:
 
 # Is this a "named" type, i.e. engine or script class?
 func class_exists() -> bool:
-	return _source != Source.NONE
+	return _source == Source.ENGINE or _source == Source.SCRIPT
 
 # Does our stored resource path exist?
 # False for engine classes.
@@ -318,7 +244,7 @@ func get_script_parent() -> Reference:
 	elif res:
 		var scene := res as PackedScene
 		if scene:
-			var script := _scene_get_root_script(scene)
+			var script := TypeDB._scene_get_root_script(scene)
 			ret._init_from_object(script)
 		else:
 			var script := res as Script
@@ -326,7 +252,6 @@ func get_script_parent() -> Reference:
 				ret._init_from_object(script.get_base_script())
 			else:
 				ret.path("")
-
 	return ret
 
 # get inherited scene resource as ClassType
@@ -335,8 +260,10 @@ func get_scene_parent() -> Reference:
 	match _source:
 		Source.ENGINE, Source.SCRIPT:
 			return ret
+		Source.NONE:
+			return null
 	var scene := res as PackedScene
-	scene = _scene_get_root_scene(scene)
+	scene = TypeDB._scene_get_root_scene(scene)
 	ret.res = scene
 	return ret
 
@@ -372,15 +299,15 @@ func become_parent() -> bool:
 	if not res:
 		if not name:
 			return true
-		name = ClassDB.get_parent_class(name)
+		self.name = ClassDB.get_parent_class(name)
 		return ClassDB.class_exists(name)
 	var scene := res as PackedScene
 	if scene:
-		var base := _scene_get_root_scene(scene)
+		var base := TypeDB._scene_get_root_scene(scene)
 		if base:
 			self.res = base
 			return true
-		var script := _scene_get_root_script(scene)
+		var script := TypeDB._scene_get_root_script(scene)
 		if script:
 			self.res = script
 			return true
@@ -392,7 +319,7 @@ func get_type_script() -> Script:
 	var scene := res as PackedScene
 	var script: Script = null
 	if scene:
-		script = _scene_get_root_script(scene)
+		script = TypeDB._scene_get_root_script(scene)
 	if not script:
 		script = res as Script
 	return script
@@ -410,162 +337,11 @@ func can_instance() -> bool:
 # Generate a list of named classes that extend the represented class or
 # resource. SLOW
 func get_inheritors_list() -> PoolStringArray:
-	var class_list = get_class_list()
-	var ret := PoolStringArray()
-	for a_class in class_list:
-		if a_class != name and static_is_type(a_class, name, _get_map()):
-			ret.append(a_class)
-	return ret
-
-# Same as get_inheritors_list, but it includes all resources. SLOW
-func get_deep_inheritors_list() -> PoolStringArray:
-	_fetch_deep_type_map()
-	var class_list := PoolStringArray(_deep_type_map.keys())
-	var ret := PoolStringArray()
-	for a_class in class_list:
-		if a_class != name and static_is_type(a_class, name, _get_map()):
-			ret.append(a_class)
-	return ret
-
-# Generate a list of engine class names
-func get_engine_class_list() -> PoolStringArray:
-	return ClassDB.get_class_list()
-
-# Generate a list of script class names
-func get_script_class_list() -> PoolStringArray:
-	_fetch_script_map()
-	return PoolStringArray(_script_map.keys())
-
-# Generate a list of all named classes
-func get_class_list() -> PoolStringArray:
-	var class_list := PoolStringArray()
-	class_list.append_array(get_engine_class_list())
-	class_list.append_array(get_script_class_list())
-	return class_list
-
-# Generate a list of class names
-func get_deep_class_list() -> PoolStringArray:
-	_fetch_deep_type_map()
-	var class_list := PoolStringArray(_deep_type_map.keys())
-	class_list.append_array(PoolStringArray(get_engine_class_list()))
-	return class_list
-
-# Generate a list of all engine and resource names
-static func static_get_engine_class_list() -> PoolStringArray:
-	return ClassDB.get_class_list()
-
-# Generate a list of script class names
-static func static_get_script_class_list() -> PoolStringArray:
-	return PoolStringArray(_get_script_map().keys())
-
-# Generate a list of all named classes
-static func static_get_class_list() -> PoolStringArray:
-	var class_list := PoolStringArray()
-	class_list.append_array(static_get_engine_class_list())
-	class_list.append_array(static_get_script_class_list())
-	return class_list
-
-# Generate a list of all engine and resource names
-static func static_get_deep_class_list() -> PoolStringArray:
-	var _deep_type_map = _get_deep_type_map()
-	var class_list := PoolStringArray(_deep_type_map.keys())
-	class_list.append_array(static_get_engine_class_list())
-	return class_list
+	return TypeDB.get_inheritors_list(name)
 
 func is_object_instance_of(p_object) -> bool:
-	var ct = from_object(p_object)
-	return is_type(ct)
-
-# Tests whether an object constitutes a class name or resource
-static func static_is_object_instance_of(p_object, p_type, p_map: Dictionary = {}) -> bool:
-	if not p_object or typeof(p_object) != TYPE_OBJECT:
-		return false
-	var node := p_object as Node
-	var map = p_map
-	if map.empty():
-		map = _get_script_map()
-	if node and node.filename:
-		return static_is_type(load(node.filename), p_type, map)
-	var script := p_object.get_script() as Script
-	if script:
-		return static_is_type(script, p_type, map)
-	return static_is_type(p_object.get_class(), p_type, map)
-
-# Tests whether a class name or resource constitutes another
-# String names and Resource instances are interchangeable
-# Ex. static_is_type(MyNode, "Node") == static_is_type("MyNode", "Node"), etc.
-# PackedScenes are also supported.
-# Note that scenes are capable of inheriting from divergent
-# script and scene inheritance hierarchies simultaneously
-static func static_is_type(p_type, p_other, p_map: Dictionary = {}) -> bool:
-	if not p_type:
-		return false
-	var map = {}
-	if p_map.empty():
-		map = _get_script_map()
-	else:
-		map = p_map
-	
-	match typeof(p_type):
-		# static_is_type(<string>, <something>)
-		TYPE_STRING:
-
-			# static_is_type("Node", "Node")
-			if ClassDB.class_exists(p_type) and ClassDB.class_exists(p_other):
-				return ClassDB.is_parent_class(p_type, p_other)
-
-			# static_is_type("MyType", "Node")
-			# static_is_type("MyType", "MyType")
-			# static_is_type("MyType", "MyTypeScn")
-			# static_is_type("MyTypeScn", "Node")
-			# static_is_type("MyTypeScn", "MyType")
-			# static_is_type("MyTypeScn", "MyTypeScn")
-			var res_type := _convert_name_to_res(p_type, map)
-			if res_type:
-				return static_is_type(res_type, p_other, map)
-			
-			return false
-
-		TYPE_OBJECT:
-
-			match typeof(p_other):
-				# static_is_type(MyType, "Node")
-				# static_is_type(MyType, "MyType")
-				# static_is_type(MyType, "MyTypeScn")
-				# static_is_type(MyTypeScn, "Node")
-				# static_is_type(MyTypeScn, "MyType")
-				# static_is_type(MyTypeScn, "MyTypeScn")
-				TYPE_STRING:
-
-					if ClassDB.class_exists(p_other):
-						if p_type is PackedScene:
-							return _scene_is_engine(p_type, p_other)
-						elif p_type is Script:
-							return _script_is_engine(p_type, p_other)
-
-					var res_other := _convert_name_to_res(p_other, map)
-					if res_other:
-						return static_is_type(p_type, res_other, map)
-
-				# static_is_type(MyType, MyType)
-				# static_is_type(MyType, MyTypeScn)
-				# static_is_type(MyType, node) # reversed scenario (is the node a MyType)
-				# static_is_type(MyTypeScn, MyType)
-				# static_is_type(MyTypeScn, MyTypeScn)
-				# static_is_type(MyTypeScn, node) # reversed scenario (is the node a MyTypeScene)
-				TYPE_OBJECT:
-
-					if p_type is PackedScene:
-						if p_other is PackedScene:
-							return _scene_is_scene(p_type, p_other)
-						elif p_other is Script:
-							return _scene_is_script(p_type, p_other)
-					elif p_type is Script:
-						if p_other is PackedScene:
-							return _script_is_scene(p_type, p_other)
-						elif p_other is Script:
-							return _script_is_script(p_type, p_other)
-	return false
+	var ct := from_object(p_object) as Reference
+	return ct.is_type(self)
 
 # ClassType.new(p_name), but for clarity.
 static func from_name(p_name: String) -> Reference:
@@ -595,13 +371,6 @@ static func from_type_dict(p_data: Dictionary) -> Reference:
 			ret._init_from_path(p_data.path)
 	return ret
 
-# Generate a PascalCase typename from a file path.
-static func namify_path(p_path: String) -> String:
-	var p := p_path.get_file().get_basename()
-	while p != p.get_basename():
-		p = p.get_basename()
-	return p.capitalize().replace(" ", "")
-
 ##### CONNECTIONS #####
 
 ##### PRIVATE METHODS #####
@@ -614,43 +383,27 @@ func _init_from_name(p_name: String) -> void:
 		res = null
 		_source = Source.ENGINE
 		return
-	_fetch_script_map()
-	if _deep_type_map.has(p_name):
-		path = _deep_type_map[p_name].path
-		res = load(path)
-		_source = Source.ANONYMOUS
-		if _script_map.has(p_name):
-			_source = Source.SCRIPT
-		return
-	if _script_map.has(p_name):
+	var data := TypeDB._get_script_class_data(p_name)
+	if not data.empty():
 		path = _script_map[p_name].path
 		res = load(path)
 		_source = Source.SCRIPT
 		return
-	
 	path = ""
 	res = null
 	_source = Source.NONE
-	_connect_script_updates()
 
 # reset properties based on a given path
 func _init_from_path(p_path: String) -> void:
 	path = p_path
 	res = load(path) if ResourceLoader.exists(path) else null
-	_fetch_script_map()
-	if not _deep_path_map.empty() and _deep_path_map.has(p_path):
-		name = _deep_path_map[p_path]
-		_source = Source.ANONYMOUS
-		if _script_map.has(name):
-			_source = Source.SCRIPT
-		return
-	if _path_map.has(p_path):
-		name = _path_map[p_path]
+	var map := TypeDB.get_script_map()
+	if map.has(p_path):
+		name = map[p_path].name
 		_source = Source.SCRIPT
 		return
 	name = ""
 	_source = Source.NONE
-	_connect_script_updates()
 
 # reset properties based on a given object instance
 # if null: don't initialize.
@@ -691,59 +444,6 @@ func _init_from_object(p_object: Object) -> void:
 	if not initialized and not path and not name:
 		_init_from_name(p_object.get_class())
 		initialized = true
-	_connect_script_updates()
-
-func _connect_script_updates() -> void:
-	if Engine.editor_hint and not _is_filesystem_connected:
-		var ep: EditorPlugin = EditorPlugin.new()
-		var fs: EditorFileSystem = ep.get_editor_interface().get_resource_filesystem()
-		if not fs.is_connected("filesystem_changed", self, "set"):
-			#warning-ignore:return_value_discarded
-			fs.connect("filesystem_changed", self, "set", ["_script_map_dirty", true])
-		ep.free()
-		_is_filesystem_connected = true
-
-# Utility method to re-populate the script maps if not yet initialized.
-func _fetch_script_map() -> void:
-	if _script_map_dirty:
-		_script_map = _get_script_map()
-		_build_path_map()
-		_script_map_dirty = false
-
-# Utility method to build the path map from the script map.
-func _build_path_map() -> void:
-	_path_map = _get_path_map(_script_map)
-
-# Utility method that returns a path map by building it from the given script map.
-static func _get_path_map(p_script_map: Dictionary) -> Dictionary:
-	var _path_map = {}
-	for a_name in p_script_map:
-		_path_map[p_script_map[a_name].path] = a_name
-	return _path_map
-
-# Utility method that returns a script map by fetching it from ProjectSettings
-static func _get_script_map() -> Dictionary:
-	var script_classes: Array = ProjectSettings.get_setting("_global_script_classes") as Array if ProjectSettings.has_setting("_global_script_classes") else []
-	var script_map := {}
-	for a_class in script_classes:
-		script_map[a_class["class"]] = a_class
-	return script_map
-
-# Same as _fetch_script_map, but it includes all resources
-func _fetch_deep_type_map() -> void:
-	if _deep_type_map.empty():
-		_deep_type_map = _get_deep_type_map()
-		_build_deep_path_map()
-
-# Same as _build_path_map, but it includes all resources
-func _build_deep_path_map() -> void:
-	_deep_path_map = _get_deep_path_map(_deep_type_map)
-
-func _get_deep_path_map(p_deep_type_map: Dictionary) -> Dictionary:
-	var _deep_path_map = {}
-	for a_name in p_deep_type_map:
-		_deep_path_map[p_deep_type_map[a_name].path] = a_name
-	return _deep_path_map
 
 # Same as _get_script_map, but it includes all resources
 static func _get_deep_type_map() -> Dictionary:
@@ -786,7 +486,7 @@ static func _get_deep_type_map() -> Dictionary:
 						var a_path = dir.get_current_dir() + ("/" if not first else "") + file_name
 
 						var existing_name = _path_map[a_path] if _path_map.has(a_path) else ""
-						var a_name = namify_path(file_name)
+						var a_name = TypeDB.namify_path(file_name)
 						a_name = a_name.replace("2d", "2D").replace("3d", "3D")
 
 						if data.has(existing_name) and existing_name == a_name:
@@ -808,99 +508,12 @@ static func _get_deep_type_map() -> Dictionary:
 	return data
 
 # Utility for fetching a reference to this script in a static context
-static func _get_script() -> Script:
-	return load("res://addons/godot-next/references/class_type.gd") as Script
+static func _this() -> Script:
+	return load(SELF_PATH) as Script
 
 # Utility for creating an instance of this class in a static context
 static func _new() -> Reference:
-	return (_get_script()).new() as Reference
-
-# Does this script inherit the features of the given engine class?
-static func _script_is_engine(p_script: Script, p_class: String) -> bool:
-	return ClassDB.is_parent_class(p_script.get_instance_base_type(), p_class)
-
-# Does one script extend the other, or are they the same?
-static func _script_is_script(p_script: Script, p_other: Script) -> bool:
-	var script = p_script
-	while script:
-		if script == p_other:
-			return true
-		script = script.get_base_script()
-	return false
-
-# Is this script extending the same script or class at the root of this scene?
-static func _script_is_scene(p_script: Script, p_scene: PackedScene) -> bool:
-	var state := p_scene.get_state()
-	for prop_index in range(state.get_node_property_count(0)):
-		if state.get_node_property_name(0, prop_index) == "script":
-			var script := state.get_node_property_value(0, prop_index) as Script
-			return _script_is_script(p_script, script)
-	return false
-
-# Is a scene's root node a parent of a certain class?
-static func _scene_is_engine(p_scene: PackedScene, p_class: String) -> bool:
-	return ClassDB.is_parent_class(p_scene.get_state().get_node_type(0), p_class)
-
-# Does a scene's root script derive from another script?
-static func _scene_is_script(p_scene: PackedScene, p_script: Script) -> bool:
-	if not p_scene or not p_script:
-		return false
-	var script := _scene_get_root_script(p_scene)
-	if not script:
-		return false
-	return _script_is_script(script, p_script)
-
-# Does a scene derive another scene?
-static func _scene_is_scene(p_scene: PackedScene, p_other: PackedScene) -> bool:
-	if not p_scene or not p_other:
-		return false
-	if p_scene == p_other:
-		return true
-	var scene := p_scene
-	while scene:
-		var state := scene.get_state()
-		var base = state.get_node_instance(0)
-		if p_other == base:
-			return true
-		scene = base
-	return false
-
-static func _convert_name_to_res(p_name: String, p_map: Dictionary = {}) -> Resource:
-	if not p_name or ClassDB.class_exists(p_name) or p_map.empty() or not p_map.has(p_name):
-		return null
-	return load(p_map[p_name].path)
-
-static func _convert_name_to_variant(p_name: String, p_map: Dictionary = {}):
-	var res = _convert_name_to_res(p_name, p_map)
-	if res:
-		return res
-	if ClassDB.class_exists(p_name):
-		return p_name
-	return null
-
-# Return the root script associated with a scene.
-static func _scene_get_root_script(p_scene: PackedScene) -> Script:
-	var state := p_scene.get_state()
-	while state:
-		var prop_count := state.get_node_property_count(0)
-		if prop_count:
-			for i in range(prop_count):
-				if state.get_node_property_name(0, i) == "script":
-					var script := state.get_node_property_value(0, i) as Script
-					return script
-		var base := state.get_node_instance(0)
-		if base:
-			state = base.get_state()
-		else:
-			state = null
-	return null
-
-# Return the root scene associated with a scene.
-static func _scene_get_root_scene(p_scene: PackedScene) -> PackedScene:
-	if not p_scene:
-		return null
-	var state := p_scene.get_state()
-	return state.get_node_instance(0)
+	return _this().new() as Reference
 
 ##### SETTERS AND GETTERS #####
 
