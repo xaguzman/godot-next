@@ -8,7 +8,7 @@
 # - Use 'get_headers()' to get a Dictionary of the headers (values are their index in the first row)
 # - Use 'get_map()' to get a Dictionary of string keys to rows.
 #     - if '_uses_map' is true, the key will be generated from the '_get_key()' virtual method (defaults to returning row[0]).
-#       Else _map will be empty. Defaults to false.
+#       Else _map will be empty. Defaults to true.
 #     - The CSVFile object dynamically generates properties that match the keys of the _map Dictionary.
 # - A .tsv file can be made simply by changing the '_sep' property to "\t".
 tool
@@ -135,19 +135,42 @@ func map_has_value(p_key: String, p_header: String) -> bool:
 
 func map_get_value(p_key: String, p_header: String):
 	if not _uses_map:
-		printerr("CSVFile is not using map, but 'get_map_value' was called")
+		push_error("CSVFile is not using map, but 'get_map_value' was called.")
 		return null
 	if not map_has_value(p_key, p_header):
+		push_error("Invalid key/header pair. No record exists to get.")
 		return null
 	return _map[p_key][_headers[p_header]]
 
-func map_set_value(p_key: String, p_header: String, p_value):
+func map_set_value(p_key: String, p_header: String, p_value) -> void:
 	if not _uses_map:
-		printerr("CSVFile is not using map, but 'get_map_value' was called")
+		push_error("CSVFile is not using map, but 'get_map_value' was called.")
 		return null
 	if not map_has_value(p_key, p_header):
+		push_error("Invalid key/header pair. No record exists to set.")
 		return null
 	_map[p_key][_headers[p_header]] = p_value
+
+func map_has_value_idx(p_index: int, p_header: String) -> bool:
+	return _array.data.size() < p_index and p_index >= 0 and _headers.has(p_header)
+
+func map_get_value_idx(p_index: int, p_header: String):
+	if not _uses_map:
+		push_error("CSVFile is not using map, but 'get_map_value_idx' was called.")
+		return null
+	if not map_has_value_idx(p_index, p_header):
+		push_error("Invalid index/header pair. No record exists to get.")
+		return null
+	return _array.get_row(p_index)[_headers[p_header]]
+
+func map_set_value_idx(p_index: int, p_header: String, p_value) -> void:
+	if not _uses_map:
+		push_error("CSVFile is not using map, but 'get_map_value_idx' was called.")
+		return
+	if not map_has_value_idx(p_index, p_header):
+		push_error("Invalid index/header pair. No record exists to set.")
+		return
+	_array.get_row(p_index)[_headers[p_header]] = p_value
 
 ##### PRIVATE METHODS #####
 
